@@ -1,0 +1,85 @@
+# ==========================================
+
+# 1. KONFIGURASI DASAR & ROMON
+
+# ==========================================
+
+/system identity set name="Switch-Manageable"
+
+/tool romon set enabled=yes secret="1"
+
+
+# ==========================================
+
+# 2. INTERFACE VLAN 99 UNTUK IP MANAGEMENT SWITCH
+
+# Ditempelkan langsung di ether1 (Jalur Tol ke CPU)
+
+# ==========================================
+
+/interface vlan
+
+add interface=ether1 name=vlan99_mgmt vlan-id=99
+
+
+/ip address
+
+add address=192.168.99.2/30 interface=vlan99_mgmt comment="IP Management Switch /30"
+
+
+# IPv6 Local ULA untuk Management
+
+/ipv6 dhcp-client
+
+add interface=vlan99_mgmt request=address
+
+
+# ==========================================
+
+# 3. PEMBUATAN BRIDGE & PORT KLIEN/SERVER
+
+# ==========================================
+
+/interface bridge
+
+add name=bridge-vlan vlan-filtering=no
+
+
+/interface bridge port
+
+# Trunk (Ke Router)
+
+add bridge=bridge-vlan interface=ether1 comment="TRUNK to Router"
+
+
+# Access (Ke Klien & Server)
+
+add bridge=bridge-vlan interface=ether2 pvid=10 comment="ACCESS VLAN 10 (Guru)"
+
+add bridge=bridge-vlan interface=ether3 pvid=20 comment="ACCESS VLAN 20 (Siswa)"
+
+add bridge=bridge-vlan interface=ether4 pvid=30 comment="ACCESS VLAN 30 (Server)"
+
+
+# ==========================================
+
+# 4. PEMETAAN VLAN TAGGED & UNTAGGED DI BRIDGE
+
+# ==========================================
+
+/interface bridge vlan
+
+add bridge=bridge-vlan tagged=ether1 untagged=ether2 vlan-ids=10
+
+add bridge=bridge-vlan tagged=ether1 untagged=ether3 vlan-ids=20
+
+add bridge=bridge-vlan tagged=ether1 untagged=ether4 vlan-ids=30
+
+
+# ==========================================
+
+# 5. AKTIVASI VLAN FILTERING
+
+# ==========================================
+
+/interface bridge set bridge-vlan vlan-filtering=yes
