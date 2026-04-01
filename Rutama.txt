@@ -1,0 +1,155 @@
+# ==========================================
+
+# 1. KONFIGURASI DASAR & ROMON
+
+# ==========================================
+
+/system identity set name="Router-Gateway"
+
+/tool romon set enabled=yes secret="1"
+
+/ip dhcp-client add interface=ether1 disabled=no
+
+
+# ==========================================
+
+# 2. PEMBUATAN VLAN (Di Interface Trunk ether2)
+
+# ==========================================
+
+/interface vlan
+
+add interface=ether2 name=vlan10_guru vlan-id=10
+
+add interface=ether2 name=vlan20_siswa vlan-id=20
+
+add interface=ether2 name=vlan30_server vlan-id=30
+
+add interface=ether2 name=vlan99_mgmt vlan-id=99
+
+
+# ==========================================
+
+# 3. PENGALAMATAN IPv4 (/24 dan /30) & IPv6
+
+# ==========================================
+
+# IPv4
+
+/ip address
+
+add address=192.168.10.1/24 interface=vlan10_guru
+
+add address=192.168.20.1/24 interface=vlan20_siswa
+
+add address=192.168.30.9/30 interface=vlan30_server comment="Gateway Server .10"
+
+add address=192.168.99.1/30 interface=vlan99_mgmt comment="Gateway Switch Mgmt"
+
+
+# IPv6 Local (Unique Local Address - ULA)
+
+/ipv6 address
+
+add address=fd00:10::1/64 interface=vlan10_guru advertise=yes
+
+add address=fd00:20::1/64 interface=vlan20_siswa advertise=yes
+
+add address=fd00:30::1/64 interface=vlan30_server advertise=yes
+
+add address=fd00:99::1/64 interface=vlan99_mgmt advertise=yes
+
+
+# ==========================================
+
+# 4. DHCP SERVER IPv4 (VLAN 10 & 20)
+
+# DNS Klien diarahkan ke IP Fedora Server (192.168.30.10)
+
+# ==========================================
+
+/ip pool
+
+add name=pool_vlan10 ranges=192.168.10.10-192.168.10.100
+
+add name=pool_vlan20 ranges=192.168.20.10-192.168.20.100
+
+
+/ip dhcp-server
+
+add address-pool=pool_vlan10 interface=vlan10_guru name=dhcp_vlan10 disabled=no
+
+add address-pool=pool_vlan20 interface=vlan20_siswa name=dhcp_vlan20 disabled=no
+
+
+/ip dhcp-server network
+
+add address=192.168.10.0/24 dns-server=192.168.30.10 gateway=192.168.10.1
+
+add address=192.168.20.0/24 dns-server=192.168.30.10 gateway=192.168.20.1
+
+
+# ==========================================
+
+# 5. NAT MASQUERADE
+
+# ==========================================
+
+/ip firewall nat
+
+add action=masquerade chain=srcnat out-interface=ether1
+
+
+# ==========================================
+
+# 6. FIREWALL FILTER (HARDENING & BRUTE FORCE)
+
+# ==========================================
+
+/ip firewall filter
+
+
+# a. Perutean Antar VLAN (Forward)
+
+add action=drop chain=forward src-address=192.168.20.0/24 dst-address=192.168.10.0/24 comment="Blokir VLAN 20 -> VLAN 10"
+
+add action=accept chain=forward src-address=192.168.30.8/30 dst-address=192.168.10.0/24 comment="Izinkan VLAN 30 -> VLAN 10"
+
+
+# b. Brute-Force 8 Lapis (Blokir 5 Menit)
+
+add action=drop chain=input src-address-list=blacklist_bruteforce comment="Drop IP Blacklist Brute-Force (5 Menit)"
+
+add action=log chain=input src-address-list=stage_7 connection-state=new dst-port=21,22,80,443,8291 protocol=tcp log-prefix="[BRUTE-FORCE-BLOCKED] " comment="Log sebelum diblokir"
+
+add action=add-src-to-address-list address-list=blacklist_bruteforce address-list-timeout=5m chain=input connection-state=new dst-port=21,22,80,443,8291 protocol=tcp src-address-list=stage_7 comment="Blacklist 5 Menit"
+
+add action=add-src-to-address-list address-list=stage_7 address-list-timeout=1m chain=input connection-state=new dst-port=21,22,80,443,8291 protocol=tcp src-address-list=stage_6
+
+add action=add-src-to-address-list address-list=stage_6 address-list-timeout=1m chain=input connection-state=new dst-port=21,22,80,443,8291 protocol=tcp src-address-list=stage_5
+
+add action=add-src-to-address-list address-list=stage_5 address-list-timeout=1m chain=input connection-state=new dst-port=21,22,80,443,8291 protocol=tcp src-address-list=stage_4
+
+add action=add-src-to-address-list address-list=stage_4 address-list-timeout=1m chain=input connection-state=new dst-port=21,22,80,443,8291 protocol=tcp src-address-list=stage_3
+
+add action=add-src-to-address-list address-list=stage_3 address-list-timeout=1m chain=input connection-state=new dst-port=21,22,80,443,8291 protocol=tcp src-address-list=stage_2
+
+add action=add-src-to-address-list address-list=stage_2 address-list-timeout=1m chain=input connection-state=new dst-port=21,22,80,443,8291 protocol=tcp src-address-list=stage_1
+
+add action=add-src-to-address-list address-list=stage_1 address-list-timeout=1m chain=input connection-state=new dst-port=21,22,80,443,8291 protocol=tcp comment="Stage 1"
+
+
+# c. Logging Normal Login
+
+add action=log chain=input protocol=tcp dst-port=21,22,80,443,8291 connection-state=new log-prefix="[LOGIN-ATTEMPT] " comment="Log Akses Router"
+
+
+# d. Akses Administrasi Hanya dari VLAN 10, 30, dan 99
+
+add action=accept chain=input protocol=tcp dst-port=21,22,80,443,8291 src-address=192.168.10.0/24 comment="Allow Mgmt dari VLAN 10"
+
+add action=accept chain=input protocol=tcp dst-port=21,22,80,443,8291 src-address=192.168.30.8/30 comment="Allow Mgmt dari VLAN 30"
+
+add action=accept chain=input protocol=tcp dst-port=21,22,80,443,8291 src-address=192.168.99.0/30 comment="Allow Mgmt dari VLAN 99"
+
+add action=drop chain=input protocol=tcp dst-port=21,22,80,443,8291 comment="Drop Mgmt selain VLAN 10, 30, 99"
