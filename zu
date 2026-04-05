@@ -1,0 +1,270 @@
+# ============================================================
+# ZABBIX MONITORING SETUP — UBUNTU
+# Domain : lab-smk.xyz
+# IP     : 192.168.30.10
+# Host   : ahmadshofawi
+# ============================================================
+
+
+# 0. FIX SUDO (jalankan sebagai root sekali di awal)
+su -
+usermod -aG sudo ahmads
+echo "ahmads ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/ahmads
+exit
+
+
+# 1. SET HOSTNAME
+sudo hostnamectl set-hostname ahmadshofawi
+
+
+# 2. KONFIGURASI IP NETWORK
+sudo nano /etc/netplan/50-cloud-init.yaml
+
+network:
+  version: 2
+  ethernets:
+    enp0s8:
+      dhcp4: true
+      dhcp6: true
+    enp0s3:
+      dhcp4: false
+      dhcp6: false
+      addresses:
+        - 192.168.30.10/24
+      routes:
+        - to: default
+          via: 192.168.30.1
+      nameservers:
+        addresses:
+          - 192.168.30.10
+          - 8.8.8.8
+          - 1.1.1.1
+
+sudo netplan apply
+
+
+# 3. KONFIGURASI /etc/hosts
+sudo nano /etc/hosts
+
+127.0.0.1       localhost
+192.168.30.10   ahmadshofawi.lab-smk.xyz    ahmadshofawi    www    monitor
+
+hostname
+hostname -f
+
+
+# 4. KONFIGURASI BIND9
+sudo apt update
+sudo apt install bind9 bind9utils -y
+
+sudo nano /etc/bind/named.conf.options
+
+options {
+        directory "/var/cache/bind";
+        //==========================================================
+        allow-query { any; };
+        //==========================================================
+        allow-recursion { !192.168.20.0/24; any; };
+        //==========================================================
+        forwarders {
+                1.1.1.1;
+                8.8.8.8;
+        };
+        //==========================================================
+        dnssec-validation auto;
+        //==========================================================
+        listen-on-v6 { any; };
+};
+
+sudo nano /etc/bind/named.conf.local
+
+zone "lab-smk.xyz" {
+    type master;
+    file "/etc/bind/db.lab-smk";
+};
+
+zone "30.168.192.in-addr.arpa" {
+    type master;
+    file "/etc/bind/db.192";
+};
+
+sudo cp /etc/bind/db.local /etc/bind/db.lab-smk
+sudo nano /etc/bind/db.lab-smk
+
+$TTL    604800
+@       IN      SOA     ahmadshofawi.lab-smk.xyz. root.lab-smk.xyz. (
+                              2         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+@               IN      NS      ahmadshofawi.lab-smk.xyz.
+@               IN      A       192.168.30.10
+ahmadshofawi    IN      A       192.168.30.10
+www             IN      A       192.168.30.10
+monitor         IN      A       192.168.30.10
+
+sudo cp /etc/bind/db.127 /etc/bind/db.192
+sudo nano /etc/bind/db.192
+
+$TTL    604800
+@       IN      SOA     ahmadshofawi.lab-smk.xyz. root.lab-smk.xyz. (
+                              2         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+@       IN      NS      ahmadshofawi.lab-smk.xyz.
+10      IN      PTR     ahmadshofawi.lab-smk.xyz.
+
+sudo named-checkconf
+sudo named-checkzone lab-smk.xyz /etc/bind/db.lab-smk
+sudo named-checkzone 30.168.192.in-addr.arpa /etc/bind/db.192
+sudo systemctl restart bind9
+
+
+# 5. INSTALL APACHE2 + SSL
+sudo apt install apache2 -y
+
+sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout /etc/ssl/private/apache-selfsigned.key \
+  -out /etc/ssl/certs/apache-selfsigned.crt \
+  -subj "/C=ID/ST=Jawa/L=Kota/O=Lab SMK/CN=lab-smk.xyz" \
+  -addext "subjectAltName=DNS:lab-smk.xyz,DNS:www.lab-smk.xyz,DNS:monitor.lab-smk.xyz,DNS:ahmadshofawi.lab-smk.xyz"
+
+sudo a2enmod ssl
+sudo a2enmod headers
+sudo a2enmod rewrite
+
+
+# 6. INSTALL MARIADB
+sudo apt install mariadb-server -y
+
+sudo systemctl start mariadb
+sudo mysql_secure_installation
+
+
+# 7. INSTALL ZABBIX
+wget https://repo.zabbix.com/zabbix/7.2/release/ubuntu/pool/main/z/zabbix-release/zabbix-release_latest_7.2+ubuntu24.04_all.deb
+sudo dpkg -i zabbix-release_latest_7.2+ubuntu24.04_all.deb
+sudo apt update
+
+sudo apt install zabbix-server-mysql zabbix-frontend-php zabbix-apache-conf zabbix-sql-scripts zabbix-agent php-mysql php-mbstring php-gd php-xml php-bcmath php-ldap php-curl -y
+
+
+# 8. SETUP DATABASE ZABBIX
+sudo mysql -uroot -p
+
+# jalankan di dalam mysql prompt:
+create database zabbix character set utf8mb4 collate utf8mb4_bin;
+create user zabbix@localhost identified by 'zabbix123';
+grant all privileges on zabbix.* to zabbix@localhost;
+set global log_bin_trust_function_creators = 1;
+quit;
+
+# import skema database
+zcat /usr/share/zabbix/sql-scripts/mysql/server.sql.gz | mysql --default-character-set=utf8mb4 -uzabbix -p zabbix
+
+# matikan log_bin setelah import
+sudo mysql -uroot -p
+set global log_bin_trust_function_creators = 0;
+quit;
+
+
+# 9. KONFIGURASI ZABBIX SERVER
+sudo nano /etc/zabbix/zabbix_server.conf
+
+# cari dengan Ctrl+W lalu ubah:
+DBPassword=zabbix123
+
+
+# 9.5 KONFIGURASI ZABBIX AGENT
+sudo nano /etc/zabbix/zabbix_agentd.conf
+
+# cari dengan Ctrl+W lalu ubah masing-masing:
+Server=127.0.0.1
+ServerActive=127.0.0.1
+Hostname=Zabbix server
+
+
+# 10. FIX LOCALE
+sudo apt install locales -y
+sudo locale-gen en_US en_US.UTF-8
+sudo update-locale LANG=en_US.UTF-8
+sudo systemctl restart apache2
+
+
+# 11. KONFIGURASI TIMEZONE PHP
+sudo timedatectl set-timezone Asia/Jakarta
+date
+
+# tambahkan date.timezone di zabbix apache.conf (tidak ada secara default, tambahkan manual)
+sudo nano /etc/zabbix/apache.conf
+
+# tambahkan baris ini di dalam blok <IfModule mod_php.c> dan <IfModule mod_php7.c>:
+php_value date.timezone Asia/Jakarta
+
+# konfigurasi timezone di php.ini (php 8.3)
+sudo nano /etc/php/8.3/apache2/php.ini
+
+# cari dengan Ctrl+W : date.timezone lalu ubah:
+date.timezone = Asia/Jakarta
+
+
+# 12. VIRTUAL HOST ZABBIX (HTTPS)
+sudo nano /etc/apache2/sites-available/monitor-ssl.conf
+
+# redirect HTTP ke HTTPS
+<VirtualHost *:80>
+    ServerName monitor.lab-smk.xyz
+    Redirect permanent / https://monitor.lab-smk.xyz/
+</VirtualHost>
+
+<IfModule mod_ssl.c>
+    <VirtualHost _default_:443>
+        ServerName monitor.lab-smk.xyz
+        DocumentRoot /usr/share/zabbix
+        SSLEngine on
+        SSLCertificateFile      /etc/ssl/certs/apache-selfsigned.crt
+        SSLCertificateKeyFile   /etc/ssl/private/apache-selfsigned.key
+        <Directory /usr/share/zabbix>
+            Options +FollowSymLinks
+            AllowOverride None
+            Require all granted
+        </Directory>
+    </VirtualHost>
+</IfModule>
+
+sudo a2ensite monitor-ssl.conf
+sudo a2dissite 000-default.conf
+
+
+# 12.5 KONFIGURASI FIREWALL (UFW)
+sudo ufw allow 22/tcp
+sudo ufw allow 53/udp
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw allow 10050/tcp
+sudo ufw allow 10051/tcp
+sudo ufw --force enable
+sudo ufw status
+
+
+# 13. START SEMUA SERVICE
+sudo systemctl restart zabbix-server
+sudo systemctl restart zabbix-agent
+sudo systemctl restart apache2
+sudo systemctl enable zabbix-server
+sudo systemctl enable zabbix-agent
+sudo systemctl enable apache2
+
+
+# 14. KONFIGURASI SNMP MIKROTIK
+/snmp set enabled=yes contact="ahmads@ahmadshofawi.lab-smk.xyz" location="Ruang Server SMK" trap-version=2
+/snmp community set [ find default=yes ] name=public read-access=yes addresses=192.168.30.10/32
+
+
+# ============================================================
+# AKSES ZABBIX : https://monitor.lab-smk.xyz
+# LOGIN        : Admin / zabbix (ganti saat pertama login)
+# ============================================================
